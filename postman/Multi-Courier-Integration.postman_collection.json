@@ -1,0 +1,146 @@
+{
+  "info": {
+    "_postman_id": "4a47b224-8f56-4b6d-8be5-5c8dbaf649f4",
+    "name": "Multi-Courier Integration API",
+    "description": "End-to-end requests for local development. Run Health and List Couriers first. The MockCourier lifecycle and bulk flow work without provider credentials. Run the UrbaneBolt folder only after configuring server-side UAT credentials and customer code. Bulk processing requires the API and worker to be running; poll Get Batch until COMPLETED.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "requestId", "value": "", "type": "string" },
+    { "key": "orderId", "value": "", "type": "string" },
+    { "key": "batchId", "value": "", "type": "string" },
+    { "key": "bulkOrderA", "value": "", "type": "string" },
+    { "key": "bulkOrderB", "value": "", "type": "string" },
+    { "key": "urbaneboltOrderId", "value": "", "type": "string" },
+    { "key": "awbNumber", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "01 - Health and Discovery",
+      "item": [
+        {
+          "name": "Health",
+          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/health", "description": "Check that the API is responding." },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('API responds successfully', () => pm.response.to.have.status(200));", "pm.test('Health envelope is valid', () => pm.expect(pm.response.json().data.status).to.eql('ok'));"] } }]
+        },
+        {
+          "name": "List Supported Couriers",
+          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/couriers", "description": "List adapters registered by the server." },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Courier list responds successfully', () => pm.response.to.have.status(200));", "pm.test('MockCourier is registered', () => pm.expect(pm.response.json().data.couriers).to.include('mockcourier'));"] } }]
+        }
+      ]
+    },
+    {
+      "name": "02 - MockCourier Single Order Lifecycle",
+      "description": "Run requests in order: create, get, track, cancel. The create request generates a fresh order ID each run.",
+      "item": [
+        {
+          "name": "Create MockCourier Order",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const orderId = `PM-${Date.now()}`;", "pm.collectionVariables.set('orderId', orderId);", "pm.collectionVariables.set('requestId', pm.variables.replaceIn('{{$guid}}'));"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Order is created', () => pm.response.to.have.status(201));", "const body = pm.response.json();", "pm.test('Response uses unified envelope', () => pm.expect(body).to.have.property('success', true));", "pm.collectionVariables.set('orderId', body.data.order_id);", "pm.test('Shipment identifiers are returned', () => pm.expect(body.data.awb_number).to.be.a('string'));"] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-request-id", "value": "{{requestId}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"order_id\": \"{{orderId}}\",\n  \"courier_partner\": \"mockcourier\",\n  \"pickup\": {\n    \"name\": \"Warehouse\",\n    \"phone\": \"9999999999\",\n    \"line1\": \"Warehouse Road\",\n    \"city\": \"Pune\",\n    \"state\": \"Maharashtra\",\n    \"postal_code\": \"411001\",\n    \"country\": \"India\"\n  },\n  \"delivery\": {\n    \"name\": \"Customer\",\n    \"phone\": \"8888888888\",\n    \"line1\": \"MG Road\",\n    \"city\": \"Mumbai\",\n    \"state\": \"Maharashtra\",\n    \"postal_code\": \"400001\",\n    \"country\": \"India\"\n  },\n  \"items\": [{ \"sku\": \"SKU-1\", \"name\": \"Sample item\", \"quantity\": 1, \"unit_price\": 499 }],\n  \"payment_mode\": \"PREPAID\",\n  \"declared_value\": 499,\n  \"currency\": \"INR\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/orders",
+            "description": "Creates a shipment through MockCourier and stores it. Re-running this request generates a new idempotent order ID."
+          }
+        },
+        {
+          "name": "Get Order",
+          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/orders/{{orderId}}", "description": "Retrieve the persisted order by its internal order ID." },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Order is found', () => pm.response.to.have.status(200));", "pm.test('Order ID matches collection variable', () => pm.expect(pm.response.json().data.order_id).to.eql(pm.collectionVariables.get('orderId')));"] } }]
+        },
+        {
+          "name": "Track Order",
+          "request": { "method": "GET", "header": [{ "key": "x-request-id", "value": "{{$guid}}" }], "url": "{{baseUrl}}/api/v1/orders/{{orderId}}/track", "description": "Refresh status from the selected courier and append the tracking event." },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Tracking responds successfully', () => pm.response.to.have.status(200));", "pm.test('Tracking response contains status and history', () => { const data = pm.response.json().data; pm.expect(data.status).to.be.a('string'); pm.expect(data.history).to.be.an('array'); });"] } }]
+        },
+        {
+          "name": "Cancel Order",
+          "request": { "method": "POST", "header": [{ "key": "x-request-id", "value": "{{$guid}}" }], "url": "{{baseUrl}}/api/v1/orders/{{orderId}}/cancel", "description": "Cancel the existing shipment. A repeated call is idempotent after cancellation." },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Cancellation responds successfully', () => pm.response.to.have.status(200));", "pm.test('Cancellation status is returned', () => pm.expect(pm.response.json().data.status).to.eql('CANCELLED'));"] } }]
+        }
+      ]
+    },
+    {
+      "name": "03 - Bulk Create and Poll",
+      "description": "Run Submit Bulk Orders, then repeat Get Batch until data.status is COMPLETED. Ensure npm run worker is running.",
+      "item": [
+        {
+          "name": "Submit Bulk Orders",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const stamp = Date.now();", "pm.collectionVariables.set('bulkOrderA', `PM-BULK-A-${stamp}`);", "pm.collectionVariables.set('bulkOrderB', `PM-BULK-B-${stamp}`);"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Batch is accepted', () => pm.response.to.have.status(202));", "const data = pm.response.json().data;", "pm.collectionVariables.set('batchId', data.batch_id);", "pm.test('Batch contains per-order acceptance results', () => pm.expect(data.accepted).to.have.length(2));"] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-request-id", "value": "{{$guid}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"orders\": [\n    {\n      \"order_id\": \"{{bulkOrderA}}\",\n      \"courier_partner\": \"mockcourier\",\n      \"pickup\": { \"name\": \"Warehouse\", \"phone\": \"9999999999\", \"line1\": \"Warehouse Road\", \"city\": \"Pune\", \"state\": \"Maharashtra\", \"postal_code\": \"411001\", \"country\": \"India\" },\n      \"delivery\": { \"name\": \"Customer A\", \"phone\": \"8888888888\", \"line1\": \"MG Road\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postal_code\": \"400001\", \"country\": \"India\" },\n      \"items\": [{ \"sku\": \"SKU-A\", \"name\": \"Sample A\", \"quantity\": 1, \"unit_price\": 100 }],\n      \"payment_mode\": \"PREPAID\",\n      \"declared_value\": 100,\n      \"currency\": \"INR\"\n    },\n    {\n      \"order_id\": \"{{bulkOrderB}}\",\n      \"courier_partner\": \"mockcourier\",\n      \"pickup\": { \"name\": \"Warehouse\", \"phone\": \"9999999999\", \"line1\": \"Warehouse Road\", \"city\": \"Pune\", \"state\": \"Maharashtra\", \"postal_code\": \"411001\", \"country\": \"India\" },\n      \"delivery\": { \"name\": \"Customer B\", \"phone\": \"8888888888\", \"line1\": \"Park Street\", \"city\": \"Kolkata\", \"state\": \"West Bengal\", \"postal_code\": \"700016\", \"country\": \"India\" },\n      \"items\": [{ \"sku\": \"SKU-B\", \"name\": \"Sample B\", \"quantity\": 1, \"unit_price\": 200 }],\n      \"payment_mode\": \"PREPAID\",\n      \"declared_value\": 200,\n      \"currency\": \"INR\"\n    }\n  ]\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/orders/bulk",
+            "description": "Accepts 1-100 distinct orders and returns a batch ID."
+          }
+        },
+        {
+          "name": "Get Batch",
+          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/batches/{{batchId}}", "description": "Poll repeatedly until data.status is COMPLETED; results include each order’s status, AWB, and failure reason when applicable." },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Batch is found', () => pm.response.to.have.status(200));", "const data = pm.response.json().data;", "pm.test('Batch reports each submitted order', () => pm.expect(data.results).to.have.length(2));", "console.log(`Batch status: ${data.status}; processed: ${data.processed_count}/${data.total_count}`);"] } }]
+        }
+      ]
+    },
+    {
+      "name": "04 - Normalized Error Examples",
+      "item": [
+        {
+          "name": "Unsupported Courier",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"order_id\": \"PM-UNKNOWN-COURIER\",\n  \"courier_partner\": \"not-a-courier\",\n  \"pickup\": { \"name\": \"Warehouse\", \"phone\": \"9999999999\", \"line1\": \"Warehouse Road\", \"city\": \"Pune\", \"state\": \"Maharashtra\", \"postal_code\": \"411001\", \"country\": \"India\" },\n  \"delivery\": { \"name\": \"Customer\", \"phone\": \"8888888888\", \"line1\": \"MG Road\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postal_code\": \"400001\", \"country\": \"India\" },\n  \"items\": [{ \"sku\": \"SKU-1\", \"name\": \"Sample\", \"quantity\": 1, \"unit_price\": 100 }],\n  \"payment_mode\": \"PREPAID\",\n  \"declared_value\": 100\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/orders",
+            "description": "Expected: HTTP 400 with UNSUPPORTED_COURIER and a supported_couriers list."
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Unknown courier is a normalized 400', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error.code).to.eql('UNSUPPORTED_COURIER'); });"] } }]
+        },
+        {
+          "name": "Validation Error - Missing Address",
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"order_id\":\"PM-INVALID\",\"courier_partner\":\"mockcourier\"}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/api/v1/orders", "description": "Expected: HTTP 400 VALIDATION_ERROR with field-level details." },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Validation error is field-level HTTP 400', () => { const body = pm.response.json(); pm.response.to.have.status(400); pm.expect(body.error.code).to.eql('VALIDATION_ERROR'); pm.expect(body.error.details).to.be.an('array'); });"] } }]
+        }
+      ]
+    },
+    {
+      "name": "05 - UrbaneBolt UAT (Optional)",
+      "description": "Requires the API to be configured with URBANEBOLT_USERNAME, URBANEBOLT_PASSWORD, and URBANEBOLT_CUSTOMER_CODE. Never put courier credentials or bearer tokens in this collection.",
+      "item": [
+        {
+          "name": "Create UrbaneBolt Order",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const orderId = `PM-UB-${Date.now()}`;", "pm.collectionVariables.set('urbaneboltOrderId', orderId);"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('UrbaneBolt order accepted by courier', () => pm.response.to.have.status(201));", "const data = pm.response.json().data;", "pm.collectionVariables.set('urbaneboltOrderId', data.order_id);", "pm.collectionVariables.set('awbNumber', data.awb_number || '');", "pm.test('AWB is present for tracking', () => pm.expect(data.awb_number).to.be.a('string'));"] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "x-request-id", "value": "{{$guid}}" }],
+            "body": { "mode": "raw", "raw": "{\n  \"order_id\": \"{{urbaneboltOrderId}}\",\n  \"courier_partner\": \"urbanebolt\",\n  \"pickup\": { \"name\": \"Warehouse\", \"phone\": \"9999999999\", \"email\": \"warehouse@example.com\", \"line1\": \"Warehouse Road\", \"city\": \"Pune\", \"state\": \"Maharashtra\", \"postal_code\": \"411001\", \"country\": \"India\" },\n  \"delivery\": { \"name\": \"Customer\", \"phone\": \"8888888888\", \"email\": \"customer@example.com\", \"line1\": \"MG Road\", \"city\": \"Mumbai\", \"state\": \"Maharashtra\", \"postal_code\": \"400001\", \"country\": \"India\" },\n  \"items\": [{ \"sku\": \"SKU-UB-1\", \"name\": \"UAT sample\", \"quantity\": 1, \"unit_price\": 499, \"weight_kg\": 1.1 }],\n  \"payment_mode\": \"PREPAID\",\n  \"declared_value\": 499,\n  \"currency\": \"INR\",\n  \"package_dimensions\": { \"height_cm\": 10, \"length_cm\": 12, \"width_cm\": 10 }\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/orders",
+            "description": "Uses server-side UrbaneBolt credentials. Verify live UAT response mapping and idempotency behavior before repeated runs."
+          }
+        },
+        {
+          "name": "Track UrbaneBolt Order",
+          "request": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/v1/orders/{{urbaneboltOrderId}}/track" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Tracking response received', () => pm.response.to.have.status(200));", "pm.test('Tracking history is returned', () => pm.expect(pm.response.json().data.history).to.be.an('array'));"] } }]
+        },
+        {
+          "name": "Cancel UrbaneBolt Order",
+          "request": { "method": "POST", "header": [], "url": "{{baseUrl}}/api/v1/orders/{{urbaneboltOrderId}}/cancel" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Cancellation response received', () => pm.response.to.have.status(200));"] } }]
+        }
+      ]
+    }
+  ]
+}

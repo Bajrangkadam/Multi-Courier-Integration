@@ -1,0 +1,441 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Multi-Courier Integration API",
+    "version": "1.0.0",
+    "description": "Courier-agnostic order, shipment, tracking, cancellation, and bulk processing API. UrbaneBolt Manifest requests require package dimensions and item weights."
+  },
+  "servers": [
+    { "url": "http://localhost:3000", "description": "Local development" }
+  ],
+  "tags": [
+    { "name": "System" },
+    { "name": "Couriers" },
+    { "name": "Orders" },
+    { "name": "Bulk" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["System"],
+        "summary": "Check API health",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "API process is healthy",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/couriers": {
+      "get": {
+        "tags": ["Couriers"],
+        "summary": "List registered courier partners",
+        "operationId": "listCouriers",
+        "responses": {
+          "200": {
+            "description": "Supported courier identifiers",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CouriersResponse" } } }
+          }
+        }
+      }
+    },
+    "/api/v1/orders": {
+      "post": {
+        "tags": ["Orders"],
+        "summary": "Create a shipment for one order",
+        "operationId": "createOrder",
+        "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NormalizedOrder" }, "examples": { "mockCourier": { "$ref": "#/components/examples/MockOrder" }, "urbaneBolt": { "$ref": "#/components/examples/UrbaneBoltOrder" } } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Shipment created, or existing idempotent order returned",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateOrderResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "422": { "$ref": "#/components/responses/CourierRejected" },
+          "502": { "$ref": "#/components/responses/CourierFailure" },
+          "504": { "$ref": "#/components/responses/CourierTimeout" }
+        }
+      }
+    },
+    "/api/v1/orders/bulk": {
+      "post": {
+        "tags": ["Bulk"],
+        "summary": "Queue up to 100 orders for asynchronous creation",
+        "operationId": "createBulkOrders",
+        "parameters": [{ "$ref": "#/components/parameters/RequestId" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BulkOrderRequest" } } }
+        },
+        "responses": {
+          "202": {
+            "description": "Batch accepted; poll the batch resource for per-order results",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BulkAcceptedResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/api/v1/orders/{orderId}": {
+      "parameters": [{ "$ref": "#/components/parameters/OrderId" }],
+      "get": {
+        "tags": ["Orders"],
+        "summary": "Get persisted order and shipment details",
+        "operationId": "getOrder",
+        "responses": {
+          "200": {
+            "description": "Persisted order record",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OrderRecordResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/orders/{orderId}/track": {
+      "parameters": [{ "$ref": "#/components/parameters/OrderId" }, { "$ref": "#/components/parameters/RequestId" }],
+      "get": {
+        "tags": ["Orders"],
+        "summary": "Refresh shipment status and return tracking history",
+        "operationId": "trackOrder",
+        "responses": {
+          "200": {
+            "description": "Current normalized status and append-only history",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TrackingResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "502": { "$ref": "#/components/responses/CourierFailure" },
+          "504": { "$ref": "#/components/responses/CourierTimeout" }
+        }
+      }
+    },
+    "/api/v1/orders/{orderId}/cancel": {
+      "parameters": [{ "$ref": "#/components/parameters/OrderId" }, { "$ref": "#/components/parameters/RequestId" }],
+      "post": {
+        "tags": ["Orders"],
+        "summary": "Cancel a shipment",
+        "operationId": "cancelOrder",
+        "responses": {
+          "200": {
+            "description": "Cancellation result",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CancelResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "description": "Shipment has not yet been created by the courier", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } },
+          "502": { "$ref": "#/components/responses/CourierFailure" },
+          "504": { "$ref": "#/components/responses/CourierTimeout" }
+        }
+      }
+    },
+    "/api/v1/batches/{batchId}": {
+      "parameters": [{ "name": "batchId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }],
+      "get": {
+        "tags": ["Bulk"],
+        "summary": "Get batch progress and per-order outcomes",
+        "operationId": "getBatch",
+        "responses": {
+          "200": {
+            "description": "Batch progress with success/failure/duplicate status for each input order",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BatchResponse" } } }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "RequestId": {
+        "name": "x-request-id",
+        "in": "header",
+        "required": false,
+        "description": "Optional correlation ID. A UUID is generated when omitted or invalid.",
+        "schema": { "type": "string", "maxLength": 100 }
+      },
+      "OrderId": {
+        "name": "orderId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      }
+    },
+    "schemas": {
+      "Address": {
+        "type": "object",
+        "required": ["name", "phone", "line1", "city", "state", "postal_code", "country"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 150 },
+          "phone": { "type": "string", "minLength": 5, "maxLength": 30 },
+          "email": { "type": "string", "format": "email" },
+          "line1": { "type": "string", "minLength": 1, "maxLength": 250 },
+          "line2": { "type": "string", "maxLength": 250 },
+          "city": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "state": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "postal_code": { "type": "string", "minLength": 3, "maxLength": 20 },
+          "country": { "type": "string", "minLength": 2, "maxLength": 80 }
+        }
+      },
+      "OrderItem": {
+        "type": "object",
+        "required": ["sku", "name", "quantity", "unit_price"],
+        "properties": {
+          "sku": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "quantity": { "type": "integer", "minimum": 1 },
+          "unit_price": { "type": "number", "minimum": 0 },
+          "weight_kg": { "type": "number", "exclusiveMinimum": 0, "description": "Required for UrbaneBolt." }
+        }
+      },
+      "PackageDimensions": {
+        "type": "object",
+        "required": ["height_cm", "length_cm", "width_cm"],
+        "properties": {
+          "height_cm": { "type": "number", "exclusiveMinimum": 0 },
+          "length_cm": { "type": "number", "exclusiveMinimum": 0 },
+          "width_cm": { "type": "number", "exclusiveMinimum": 0 }
+        }
+      },
+      "NormalizedOrder": {
+        "type": "object",
+        "required": ["order_id", "courier_partner", "pickup", "delivery", "items", "payment_mode", "declared_value"],
+        "allOf": [
+          {
+            "if": { "properties": { "payment_mode": { "const": "COD" } }, "required": ["payment_mode"] },
+            "then": { "properties": { "cod_amount": { "type": "number", "exclusiveMinimum": 0 } }, "required": ["cod_amount"] }
+          },
+          {
+            "if": { "properties": { "courier_partner": { "const": "urbanebolt" } }, "required": ["courier_partner"] },
+            "then": {
+              "required": ["package_dimensions"],
+              "properties": { "items": { "items": { "required": ["weight_kg"] } } }
+            }
+          }
+        ],
+        "properties": {
+          "order_id": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Idempotency key for an internal order." },
+          "courier_partner": { "type": "string", "minLength": 1, "maxLength": 50, "examples": ["mockcourier", "urbanebolt"] },
+          "pickup": { "$ref": "#/components/schemas/Address" },
+          "delivery": { "$ref": "#/components/schemas/Address" },
+          "items": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/components/schemas/OrderItem" } },
+          "payment_mode": { "type": "string", "enum": ["PREPAID", "COD"] },
+          "cod_amount": { "type": "number", "minimum": 0, "description": "Required and greater than zero when payment_mode is COD." },
+          "declared_value": { "type": "number", "minimum": 0 },
+          "currency": { "type": "string", "minLength": 3, "maxLength": 3, "default": "INR" },
+          "package_dimensions": { "$ref": "#/components/schemas/PackageDimensions", "description": "Required for UrbaneBolt." },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "SuccessEnvelope": {
+        "type": "object",
+        "required": ["success", "data", "request_id"],
+        "properties": {
+          "success": { "const": true },
+          "data": {},
+          "request_id": { "type": "string" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["success", "error", "request_id"],
+        "properties": {
+          "success": { "const": false },
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string" },
+              "details": { "oneOf": [{ "type": "array", "items": { "$ref": "#/components/schemas/FieldError" } }, { "type": "object", "additionalProperties": true }] }
+            }
+          },
+          "request_id": { "type": "string" }
+        }
+      },
+      "FieldError": {
+        "type": "object",
+        "required": ["field", "message"],
+        "properties": { "field": { "type": "string" }, "message": { "type": "string" } }
+      },
+      "HealthResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "type": "object", "properties": { "status": { "const": "ok" } } } } }
+        ]
+      },
+      "CouriersResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "type": "object", "properties": { "couriers": { "type": "array", "items": { "type": "string" } } } } } }
+        ]
+      },
+      "CreateOrderData": {
+        "type": "object",
+        "properties": {
+          "order_id": { "type": "string" },
+          "courier_partner": { "type": "string" },
+          "courier_order_id": { "type": "string" },
+          "awb_number": { "type": ["string", "null"] },
+          "status": { "type": "string" },
+          "duplicate": { "type": "boolean" }
+        }
+      },
+      "CreateOrderResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/CreateOrderData" } } }
+        ]
+      },
+      "BulkOrderRequest": {
+        "type": "object",
+        "required": ["orders"],
+        "properties": { "orders": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "$ref": "#/components/schemas/NormalizedOrder" } } }
+      },
+      "BulkAcceptedData": {
+        "type": "object",
+        "required": ["batch_id", "status", "total_count", "accepted"],
+        "properties": {
+          "batch_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["QUEUED"] },
+          "total_count": { "type": "integer" },
+          "accepted": { "type": "array", "items": { "type": "object", "properties": { "order_id": { "type": "string" }, "duplicate": { "type": "boolean" } } } }
+        }
+      },
+      "BulkAcceptedResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/BulkAcceptedData" } } }
+        ]
+      },
+      "BatchOrderResult": {
+        "type": "object",
+        "properties": {
+          "order_id": { "type": "string" },
+          "courier_partner": { "type": "string" },
+          "status": { "type": "string" },
+          "awb_number": { "type": ["string", "null"] },
+          "last_error_code": { "type": ["string", "null"] },
+          "last_error_message": { "type": ["string", "null"] },
+          "duplicate": { "type": "boolean" }
+        }
+      },
+      "BatchData": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "total_count": { "type": "integer" },
+          "processed_count": { "type": "integer" },
+          "status": { "type": "string", "enum": ["QUEUED", "PROCESSING", "COMPLETED"] },
+          "results": { "type": "array", "items": { "$ref": "#/components/schemas/BatchOrderResult" } }
+        }
+      },
+      "BatchResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/BatchData" } } }
+        ]
+      },
+      "TrackingData": {
+        "type": "object",
+        "properties": {
+          "order_id": { "type": "string" },
+          "courier_partner": { "type": "string" },
+          "awb_number": { "type": ["string", "null"] },
+          "status": { "type": "string" },
+          "latest_event_at": { "type": ["string", "null"], "format": "date-time" },
+          "history": { "type": "array", "items": { "type": "object", "properties": { "status": { "type": "string" }, "event_at": { "type": "string", "format": "date-time" }, "raw_payload": {}, "source": { "type": "string" } } } }
+        }
+      },
+      "TrackingResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/TrackingData" } } }
+        ]
+      },
+      "CancelResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "type": "object", "properties": { "order_id": { "type": "string" }, "status": { "type": "string" }, "already_cancelled": { "type": "boolean" } } } } }
+        ]
+      },
+      "OrderRecord": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "order_id": { "type": "string" },
+          "courier_partner": { "type": "string" },
+          "courier_order_id": { "type": ["string", "null"] },
+          "awb_number": { "type": ["string", "null"] },
+          "status": { "type": "string" },
+          "request_payload": { "$ref": "#/components/schemas/NormalizedOrder" },
+          "courier_request_payload": {},
+          "courier_response_payload": {},
+          "last_error_code": { "type": ["string", "null"] },
+          "last_error_message": { "type": ["string", "null"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "OrderRecordResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/SuccessEnvelope" },
+          { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/OrderRecord" } } }
+        ]
+      }
+    },
+    "responses": {
+      "ValidationError": {
+        "description": "Invalid request body or unsupported courier partner",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" }, "examples": { "fieldErrors": { "value": { "success": false, "error": { "code": "VALIDATION_ERROR", "message": "Request validation failed", "details": [{ "field": "items.0.quantity", "message": "Number must be greater than 0" }] }, "request_id": "example-request-id" } } } }
+      },
+      "NotFound": {
+        "description": "Order or batch was not found",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "CourierRejected": {
+        "description": "Courier rejected the request; upstream response is not exposed",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "CourierFailure": {
+        "description": "Courier service or network failure",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "CourierTimeout": {
+        "description": "Courier request timed out",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      }
+    },
+    "examples": {
+      "MockOrder": {
+        "value": {
+          "order_id": "ORD-POSTMAN-1001",
+          "courier_partner": "mockcourier",
+          "pickup": { "name": "Warehouse", "phone": "9999999999", "line1": "Warehouse Road", "city": "Pune", "state": "Maharashtra", "postal_code": "411001", "country": "India" },
+          "delivery": { "name": "Customer", "phone": "8888888888", "line1": "MG Road", "city": "Mumbai", "state": "Maharashtra", "postal_code": "400001", "country": "India" },
+          "items": [{ "sku": "SKU-1", "name": "Demo item", "quantity": 1, "unit_price": 499 }],
+          "payment_mode": "PREPAID",
+          "declared_value": 499,
+          "currency": "INR"
+        }
+      },
+      "UrbaneBoltOrder": {
+        "value": {
+          "order_id": "ORD-UB-POSTMAN-1001",
+          "courier_partner": "urbanebolt",
+          "pickup": { "name": "Warehouse", "phone": "9999999999", "line1": "Warehouse Road", "city": "Pune", "state": "Maharashtra", "postal_code": "411001", "country": "India", "email": "warehouse@example.com" },
+          "delivery": { "name": "Customer", "phone": "8888888888", "line1": "MG Road", "city": "Mumbai", "state": "Maharashtra", "postal_code": "400001", "country": "India", "email": "customer@example.com" },
+          "items": [{ "sku": "SKU-1", "name": "Demo item", "quantity": 1, "unit_price": 499, "weight_kg": 1.1 }],
+          "payment_mode": "PREPAID",
+          "declared_value": 499,
+          "currency": "INR",
+          "package_dimensions": { "height_cm": 10, "length_cm": 12, "width_cm": 10 }
+        }
+      }
+    }
+  }
+}
+}

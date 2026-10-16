@@ -1,0 +1,32 @@
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import pinoHttp from "pino-http";
+import swaggerUi from "swagger-ui-express";
+import { config } from "./config";
+import { logger } from "./logger";
+import routes from "./routes";
+import { errorHandler, notFound } from "./errors/errorHandler";
+
+export const app = express();
+const openApiDocument = JSON.parse(readFileSync(path.resolve(__dirname, "../docs/openapi.json"), "utf8"));
+app.use(helmet());
+app.use(cors({ origin: config.corsOrigins }));
+app.use((req, res, next) => {
+  const supplied = req.header("x-request-id");
+  const requestId = supplied && /^[\w.-]{1,100}$/.test(supplied) ? supplied : randomUUID();
+  res.locals.requestId = requestId;
+  res.setHeader("x-request-id", requestId);
+  next();
+});
+app.use(pinoHttp({ logger }));
+app.use(express.json({ limit: "1mb" }));
+app.get("/health", (_req, res) => res.json({ success: true, data: { status: "ok" } }));
+app.get("/openapi.json", (_req, res) => res.json(openApiDocument));
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiDocument, { customSiteTitle: "Multi-Courier API" }));
+app.use("/api/v1", routes);
+app.use(notFound);
+app.use(errorHandler);
